@@ -24,7 +24,7 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
-from .ballistics import resolve_launch, simulate
+from .ballistics import LaunchConditions, resolve_launch, simulate
 from .clubs import ClubType
 from .clubs.physics import (
     SHOT_SIMULATION_DEFAULTS,
@@ -1971,6 +1971,31 @@ def handle_simulate_shot():
     """Simulate a shot (only works in mock mode)."""
     if monitor and isinstance(monitor, (MockLaunchMonitor, MockSwingSpeedMonitor)):
         monitor.simulate_shot()
+
+
+# ---- Neo-OpenFlight: phone tracer -------------------------------------------
+@socketio.on("tracer_trajectory")
+def handle_tracer_trajectory(shot_data):
+    """Return the flight path for one shot, as [x, y, z] points in yards.
+
+    x = downrange, y = right (+) / left (-), z = height.
+    The tracer page calls this after it receives a "shot" event, so the
+    normal shot pipeline stays untouched. Returns None if data is missing.
+    """
+    try:
+        conditions = LaunchConditions(
+            ball_speed_mph=float(shot_data["ball_speed_mph"]),
+            launch_angle_v=float(shot_data["launch_angle_vertical"]),
+            launch_angle_h=float(shot_data.get("launch_angle_horizontal") or 0.0),
+            spin_rpm=float(shot_data["spin_rpm"]),
+            spin_axis_deg=float(shot_data.get("spin_axis_deg") or 0.0),
+            spin_source="measured",
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    trajectory = simulate(conditions)
+    return [[round(p.x, 1), round(p.y, 1), round(p.z, 1)] for p in trajectory.points]
+# -----------------------------------------------------------------------------
 
 
 @socketio.on("toggle_debug")

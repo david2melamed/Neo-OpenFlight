@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neo-OpenFlight Tracer</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font-family: -apple-system, sans-serif; }
+  header { display: flex; justify-content: space-between; padding: 12px 16px; font-size: 14px; }
+  #status.on { color: #4c4; } #status.off { color: #c44; }
+  .label { padding: 0 16px; font-size: 12px; color: #999; }
+  canvas { display: block; width: 100%; background: #1a2a1a; margin-bottom: 8px; }
+  #stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px 16px; }
+  .stat { background: #222; border-radius: 8px; padding: 8px; }
+  .stat small { color: #999; display: block; font-size: 11px; }
+  .stat b { font-size: 20px; }
+  button { margin: 8px 16px; padding: 12px; width: calc(100% - 32px); font-size: 16px;
+           background: #333; color: #eee; border: 1px solid #555; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header><span>Neo-OpenFlight tracer v0</span><span id="status" class="off">● disconnected</span></header>
+
+<div class="label">Side view (height vs distance)</div>
+<canvas id="side" width="800" height="300"></canvas>
+<div class="label">Top view (left/right vs distance)</div>
+<canvas id="top" width="800" height="200"></canvas>
+
+<div id="stats">
+  <div class="stat"><small>Carry</small><b id="carry">–</b></div>
+  <div class="stat"><small>Apex</small><b id="apex">–</b></div>
+  <div class="stat"><small>Offline</small><b id="offline">–</b></div>
+</div>
+<button id="sim">Simulate shot</button>
+
+<script src="socket.io.min.js"></script>
+<script>
+// ---------- 1. Connect to the OpenFlight server (same machine that served this page) ----------
+const socket = io();
+const statusEl = document.getElementById('status');
+socket.on('connect',    () => { statusEl.textContent = '● connected';    statusEl.className = 'on'; });
+socket.on('disconnect', () => { statusEl.textContent = '● disconnected'; statusEl.className = 'off'; });
+
+// ---------- 2. When a shot arrives, draw it ----------
+function handleShot(msg) {
+  if (!msg.shot) return;
+  // Ask the server to run OpenFlight's physics model on this shot.
+  // The third argument is a callback: the server's return value lands here.
+  socket.emit('tracer_trajectory', msg.shot, (pts) => drawShot(pts));
+}
+
+function drawShot(pts) {                               // pts = list of [x, y, z] in yards
+  if (!pts || pts.length < 2) return;
+  const last = pts[pts.length - 1];
+  const apex = Math.max(...pts.map(p => p[2]));
+  document.getElementById('carry').textContent   = Math.round(last[0]) + ' yd';
+  document.getElementById('apex').textContent    = Math.round(apex) + ' yd';
+  const off = Math.round(last[1]);
+  document.getElementById('offline').textContent = off === 0 ? 'center' : Math.abs(off) + (off > 0 ? ' R' : ' L');
+  animate(pts);
+}
+socket.on('shot', handleShot);
+socket.on('shot_update', handleShot);
+
+// ---------- 3. Drawing: convert yards to canvas pixels ----------
+const MAX_X = 300;   // yards shown downrange
+const MAX_Z = 60;    // yards shown vertically (side view)
+const MAX_Y = 40;    // yards shown each side (top view)
+
+function drawGrid(ctx, w, h, topView) {
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = '#2f4a2f'; ctx.fillStyle = '#6a8a6a'; ctx.font = '20px sans-serif';
+  for (let yd = 50; yd < MAX_X; yd += 50) {              // yardage lines every 50 yd
+    const px = yd / MAX_X * w;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
+    ctx.fillText(yd, px + 4, h - 8);
+  }
+  if (topView) {                                          // target line down the middle
+    ctx.strokeStyle = '#557755'; ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+  }
+}
+
+function toSide(p, w, h) { return [p[0] / MAX_X * w, h - p[2] / MAX_Z * h]; }
+function toTop(p, w, h)  { return [p[0] / MAX_X * w, h / 2 + p[1] / MAX_Y * (h / 2)]; }
+
+function drawPath(ctx, pts, n, map, w, h) {
+  ctx.strokeStyle = '#ff7a3d'; ctx.lineWidth = 4; ctx.beginPath();
+  pts.slice(0, n).forEach((p, i) => {
+    const [x, y] = map(p, w, h);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+// ---------- 4. Animate: reveal a few more points every frame ----------
+let frameId = null;
+function animate(pts) {
+  const side = document.getElementById('side'), top = document.getElementById('top');
+  const sctx = side.getContext('2d'), tctx = top.getContext('2d');
+  let n = 1;
+  cancelAnimationFrame(frameId);
+  function step() {
+    drawGrid(sctx, side.width, side.height, false);
+    drawGrid(tctx, top.width, top.height, true);
+    drawPath(sctx, pts, n, toSide, side.width, side.height);
+    drawPath(tctx, pts, n, toTop, top.width, top.height);
+    if (n < pts.length) { n += 1; frameId = requestAnimationFrame(step); }
+  }
+  step();
+}
+
+// ---------- 5. Button: ask the mock server for a fake shot ----------
+document.getElementById('sim').onclick = () => socket.emit('simulate_shot');
+
+drawGrid(document.getElementById('side').getContext('2d'), 800, 300, false);
+drawGrid(document.getElementById('top').getContext('2d'), 800, 200, true);
+</script>
+</body>
+</html>
